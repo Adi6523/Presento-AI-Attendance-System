@@ -1,0 +1,121 @@
+{
+  "timestamp": "2026-09-29T05:45:01.576051+00:00",
+  "num_students": 4,
+  "num_references": 20,
+  "known_same_person": {
+    "count": 20,
+    "mean": 0.8512,
+    "median": 0.8646,
+    "std": 0.0568,
+    "p5": 0.7549,
+    "p95": 0.9313,
+    "min": 0.7487,
+    "max": 0.9313
+  },
+  "known_cross_person": {
+    "count": 60,
+    "mean": 0.1224,
+    "median": 0.1202,
+    "std": 0.1053,
+    "p5": -0.0172,
+    "p95": 0.344,
+    "min": -0.0376,
+    "max": 0.3573
+  },
+  "unknown_best_match": {
+    "count": 50,
+    "mean": 0.059,
+    "median": 0.0611,
+    "std": 0.0258,
+    "p5": 0.0166,
+    "p95": 0.0972,
+    "min": -0.017,
+    "max": 0.1299
+  },
+  "margin_stats": {
+    "count": 20,
+    "mean": 0.6116,
+    "median": 0.6624,
+    "std": 0.1168,
+    "p5": 0.4111,
+    "p95": 0.734,
+    "min": 0.4093,
+    "max": 0.7503
+  },
+  "threshold_sweep": [
+    {
+      "threshold": 0.35,
+      "tar": 1.0,
+      "frr": 0.0,
+      "far_cross": 0.0333,
+      "far_unknown": 0.0,
+      "unknown_rejection_rate": 1.0
+    },
+    {
+      "threshold": 0.4,
+      "tar": 1.0,
+      "frr": 0.0,
+      "far_cross": 0.0,
+      "far_unknown": 0.0,
+      "unknown_rejection_rate": 1.0
+    },
+    {
+      "threshold": 0.45,
+      "tar": 1.0,
+      "frr": 0.0,
+      "far_cross": 0.0,
+      "far_unknown": 0.0,
+      "unknown_rejection_rate": 1.0
+    },
+    {
+      "threshold": 0.5,
+      "tar": 1.0,
+      "frr": 0.0,
+      "far_cross": 0.0,
+      "far_unknown": 0.0,
+      "unknown_rejection_rate": 1.0
+    },
+    {
+      "threshold": 0.55,
+      "tar": 1.0,
+      "frr": 0.0,
+      "far_cross": 0.0,
+      "far_unknown": 0.0,
+      "unknown_rejection_rate": 1.0
+    },
+    {
+      "threshold": 0.6,
+      "tar": 1.0,
+      "frr": 0.0,
+      "far_cross": 0.0,
+      "far_unknown": 0.0,
+      "unknown_rejection_rate": 1.0
+    },
+    {
+      "threshold": 0.65,
+      "tar": 1.0,
+      "frr": 0.0,
+      "far_cross": 0.0,
+      "far_unknown": 0.0,
+      "unknown_rejection_rate": 1.0
+    },
+    {
+      "threshold": 0.7,
+      "tar": 1.0,
+      "frr": 0.0,
+      "far_cross": 0.0,
+      "far_unknown": 0.0,
+      "unknown_rejection_rate": 1.0
+    },
+    {
+      "threshold": 0.75,
+      "tar": 0.95,
+      "frr": 0.05,
+      "far_cross": 0.0,
+      "far_unknown": 0.0,
+      "unknown_rejection_rate": 1.0
+    }
+  ],
+  "recommended_tolerance": 0.35,
+  "recommended_min_margin": 0.2
+}

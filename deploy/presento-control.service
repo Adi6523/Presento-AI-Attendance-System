@@ -1,0 +1,26 @@
+[Unit]
+Description=Presento Raspberry Pi Camera On-Demand Control Service
+After=network-online.target time-sync.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=admin
+WorkingDirectory=/home/admin
+EnvironmentFile=-/etc/presento/control.env
+ExecStart=/usr/bin/python3 /home/admin/presento_control.py --port 5002
+Restart=always
+RestartSec=3
+
+# Resource safety & logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=presento-control
+Environment=PYTHONUNBUFFERED=1
+
+# Graceful shutdown
+TimeoutStopSec=5
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

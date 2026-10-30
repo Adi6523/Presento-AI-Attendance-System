@@ -1,0 +1,115 @@
+# ==============================================================================
+# Presento AI Vision - Git Ignore Rules
+# ==============================================================================
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# Environment Variables & Secrets
+.env
+.env.*
+!.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# Node / Frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+dist/
+.eslintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+*.tsbuildinfo
+
+# Databases & Runtime SQLite files
+*.db
+*.sqlite
+*.sqlite3
+data/*.db
+data/presento.db
+data/presento_legacy.db
+
+# Biometric Embeddings & Offline Runtime Logs (Sensitive / Generated)
+data/face_embeddings.npz
+data/face_embeddings_manifest.json
+data/offline-events.jsonl
+data/*benchmark*.json
+data/benchmark_v2_results.json
+data/benchmark_results.json
+
+# Scratch & Duplicate Portable Builds
+scratch/
+Presento-AI-Vision-Portable/
+Presento-AI-Vision-Portable.zip
+
+# Backup and temporary edit files
+*.bak
+*.backup
+*.before_*
+*~
+
+# OS & Editor Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# IDE & Editor Directories
+.idea/
+.vscode/
+*.swp
+*.swo
+.agents/
+.gemini/

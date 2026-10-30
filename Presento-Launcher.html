@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Presento — Launcher</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@600;700;800&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: #08091a;
+      color: #e0e6f7;
+      min-height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+      padding: 24px;
+    }
+
+    .bg-glow {
+      position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 0;
+    }
+    .bg-glow::before {
+      content: '';
+      position: absolute;
+      top: -30%; left: -20%;
+      width: 70vw; height: 70vw;
+      background: radial-gradient(circle, rgba(99,102,241,.22) 0%, transparent 70%);
+      border-radius: 50%;
+      animation: float1 8s ease-in-out infinite;
+    }
+    .bg-glow::after {
+      content: '';
+      position: absolute;
+      bottom: -30%; right: -15%;
+      width: 60vw; height: 60vw;
+      background: radial-gradient(circle, rgba(52,214,181,.16) 0%, transparent 70%);
+      border-radius: 50%;
+      animation: float2 10s ease-in-out infinite;
+    }
+    @keyframes float1 { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-30px)} }
+    @keyframes float2 { 0%,100%{transform:translateY(0)} 50%{transform:translateY(25px)} }
+
+    .card {
+      position: relative; z-index: 1;
+      background: rgba(255,255,255,.04);
+      border: 1px solid rgba(255,255,255,.1);
+      border-radius: 28px;
+      padding: 52px 52px 44px;
+      width: 100%; max-width: 520px;
+      backdrop-filter: blur(24px);
+      box-shadow: 0 40px 80px rgba(0,0,0,.5);
+      text-align: center;
+    }
+
+    .brand {
+      font: 800 52px Outfit;
+      letter-spacing: -1px;
+      color: #fff;
+      margin-bottom: 4px;
+    }
+    .brand span { color: #34d6b5; }
+
+    .tagline {
+      color: #8a9bb8;
+      font-size: 15px;
+      margin-bottom: 40px;
+    }
+
+    /* Status indicators */
+    .status-row {
+      display: flex; gap: 14px; justify-content: center;
+      margin-bottom: 36px; flex-wrap: wrap;
+    }
+    .status-pill {
+      display: flex; align-items: center; gap: 8px;
+      background: rgba(255,255,255,.06);
+      border: 1px solid rgba(255,255,255,.1);
+      border-radius: 50px;
+      padding: 10px 20px;
+      font-size: 14px; font-weight: 600;
+      transition: background .3s;
+    }
+    .dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      transition: background .4s;
+      box-shadow: 0 0 0 0 rgba(16,185,129,0);
+    }
+    .dot.online  {
+      background: #10b981;
+      animation: pulse-green 2s infinite;
+    }
+    .dot.offline { background: #e25062; }
+    .dot.checking{ background: #f5a623; animation: blink .8s infinite; }
+    @keyframes pulse-green {
+      0%   { box-shadow: 0 0 0 0 rgba(16,185,129,.6); }
+      70%  { box-shadow: 0 0 0 8px rgba(16,185,129,0); }
+      100% { box-shadow: 0 0 0 0 rgba(16,185,129,0); }
+    }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    /* Main button */
+    .btn-open {
+      display: block; width: 100%;
+      padding: 18px;
+      background: linear-gradient(135deg, #6366f1, #4f46e5);
+      border: none; border-radius: 16px;
+      font: 700 18px Outfit;
+      color: #fff; letter-spacing: .3px;
+      cursor: pointer;
+      box-shadow: 0 12px 32px rgba(99,102,241,.45);
+      transition: transform .15s, box-shadow .15s, opacity .15s;
+      text-decoration: none;
+      margin-bottom: 14px;
+    }
+    .btn-open:hover { transform: translateY(-2px); box-shadow: 0 18px 42px rgba(99,102,241,.55); }
+    .btn-open:active { transform: translateY(0); }
+    .btn-open:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+
+    .btn-recheck {
+      background: none; border: 1.5px solid rgba(255,255,255,.18);
+      border-radius: 10px; color: #8a9bb8; font-size: 14px;
+      padding: 10px 20px; cursor: pointer; width: 100%;
+      transition: border-color .2s, color .2s;
+    }
+    .btn-recheck:hover { border-color: #6366f1; color: #c7c9ff; }
+
+    /* Instructions */
+    .instructions {
+      margin-top: 32px;
+      text-align: left;
+      background: rgba(255,255,255,.04);
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 16px;
+      padding: 22px 24px;
+    }
+    .instructions h3 { font: 700 14px Outfit; color: #a0aec8; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 14px; }
+    .step {
+      display: flex; align-items: flex-start; gap: 12px;
+      margin-bottom: 12px; font-size: 14px; color: #8a9bb8;
+    }
+    .step-num {
+      width: 24px; height: 24px; border-radius: 50%;
+      background: rgba(99,102,241,.25); color: #a5b4fb;
+      font: 700 12px DM Sans; display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; margin-top: 1px;
+    }
+    .step strong { color: #c7d0e8; }
+
+    .footer-note { margin-top: 20px; font-size: 12px; color: #4a5680; }
+
+    /* Shimmer loader while checking */
+    @keyframes shimmer { 0%{opacity:.4} 100%{opacity:1} }
+  </style>
+</head>
+<body>
+  <div class="bg-glow"></div>
+
+  <div class="card">
+    <div class="brand">presento<span>.</span></div>
+    <p class="tagline">Smart Attendance System — Launcher</p>
+
+    <!-- Server status -->
+    <div class="status-row">
+      <div class="status-pill">
+        <div class="dot checking" id="dot-api"></div>
+        <span id="lbl-api">Backend API</span>
+      </div>
+      <div class="status-pill">
+        <div class="dot checking" id="dot-ui"></div>
+        <span id="lbl-ui">Dashboard UI</span>
+      </div>
+    </div>
+
+    <a class="btn-open" id="btn-open" href="http://localhost:5173" target="_blank">
+      🚀 Open Presento Dashboard
+    </a>
+    <button class="btn-recheck" onclick="checkStatus()">↻ Check status again</button>
+
+    <!-- Instructions -->
+    <div class="instructions">
+      <h3>System Quickstart</h3>
+      <div class="step">
+        <div class="step-num">1</div>
+        <div>Double-click <strong>Start-Presento.bat</strong> in the project folder — it opens both server windows automatically.</div>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <div>Wait ~7 seconds for the servers to initialise (the dots above turn <strong style="color:#10b981">green</strong>).</div>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <div>Click <strong>Open Presento Dashboard</strong> or browse to <strong>http://localhost:5173</strong>.</div>
+      </div>
+      <div class="step">
+        <div class="step-num">4</div>
+        <div>Keep both <em>Presento API</em> and <em>Presento Dashboard</em> command windows <strong>open</strong> while using the system.</div>
+      </div>
+    </div>
+
+    <!-- AI Vision Live Demo Section -->
+    <div class="instructions" style="margin-top: 16px; border-color: rgba(52,214,181,.25); background: rgba(52,214,181,.04);">
+      <h3 style="color: #34d6b5;">🎯 AI Vision Live Demo (Sept 30 Showcase)</h3>
+      <div class="step">
+        <div class="step-num" style="background: rgba(52,214,181,.25); color: #34d6b5;">▶</div>
+        <div>Double-click <strong>Start-Demo.bat</strong> (or run <code>.\start_demo.ps1</code>) to launch the full-screen interactive recognition HUD.</div>
+      </div>
+      <div class="step">
+        <div class="step-num" style="background: rgba(52,214,181,.25); color: #34d6b5;">⌨</div>
+        <div><strong>Hotkeys during demo:</strong><br/>
+          • <code>[1]</code> Face Detection (SCRFD + Landmarks)<br/>
+          • <code>[2]</code> Face Recognition (ArcFace + Matcher)<br/>
+          • <code>[3]</code> Anti-Spoof (Dual MN3 + MiniFASNet)<br/>
+          • <code>[4]</code> Attendance Gating (Multi-Stage Verification)<br/>
+          • <code>[5]</code> Session Summary & Analytics Dashboard<br/>
+          • <code>[P]</code> Toggle Pipeline Architecture Flowchart<br/>
+          • <code>[Space]</code> Freeze/Pause Frame | <code>[Q]</code> Stop Demo & Release Camera
+        </div>
+      </div>
+    </div>
+
+    <p class="footer-note" id="last-check">Checking server status…</p>
+  </div>
+
+  <script>
+    const API  = 'http://127.0.0.1:8000/health';
+    const UI   = 'http://localhost:5173';
+
+    function setStatus(dotId, lblId, state, text) {
+      const dot = document.getElementById(dotId);
+      const lbl = document.getElementById(lblId);
+      dot.className = 'dot ' + state;
+      lbl.textContent = text;
+    }
+
+    async function checkOne(url, timeoutMs = 2500) {
+      const ctrl = new AbortController();
+      const id   = setTimeout(() => ctrl.abort(), timeoutMs);
+      try {
+        await fetch(url, { signal: ctrl.signal, mode: 'no-cors' });
+        clearTimeout(id);
+        return true;
+      } catch {
+        clearTimeout(id);
+        return false;
+      }
+    }
+
+    async function checkStatus() {
+      setStatus('dot-api', 'lbl-api', 'checking', 'Backend API…');
+      setStatus('dot-ui',  'lbl-ui',  'checking', 'Dashboard UI…');
+
+      const [apiOk, uiOk] = await Promise.all([
+        checkOne(API),
+        checkOne(UI),
+      ]);
+
+      setStatus('dot-api', 'lbl-api', apiOk ? 'online' : 'offline', apiOk ? 'Backend API ✓' : 'Backend API ✗');
+      setStatus('dot-ui',  'lbl-ui',  uiOk  ? 'online' : 'offline', uiOk  ? 'Dashboard UI ✓': 'Dashboard UI ✗');
+
+      const note = document.getElementById('last-check');
+      const t    = new Date().toLocaleTimeString();
+      if (apiOk && uiOk) {
+        note.textContent = `✅ Both servers online as of ${t}`;
+        note.style.color = '#10b981';
+      } else {
+        note.textContent = `⚠ Some servers offline — run Start-Presento.bat (checked ${t})`;
+        note.style.color = '#f5a623';
+      }
+    }
+
+    // Initial check + auto-refresh every 8 s
+    checkStatus();
+    setInterval(checkStatus, 8000);
+  </script>
+</body>
+</html>

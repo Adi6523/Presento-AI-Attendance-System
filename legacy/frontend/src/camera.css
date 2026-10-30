@@ -1,0 +1,1 @@
+.capture{margin-top:24px;display:grid;grid-template-columns:minmax(280px,640px) 1fr;gap:20px;align-items:start}.capture video{width:100%;background:#091126;border-radius:12px;aspect-ratio:4/3;object-fit:cover}.capture button{margin-right:9px}.capture p{color:#536385}@media(max-width:800px){.capture{grid-template-columns:1fr}}

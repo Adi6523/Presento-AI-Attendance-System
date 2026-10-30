@@ -1,0 +1,1314 @@
+PRESENTO ATTENDANCE SYSTEM
+LIVE CAMERA + LIVENESS FEED INTEGRATION PLAYBOOK
+
+PURPOSE
+=======
+This document specifies how to connect the already-tested live Logitech C270
+camera feed from the Raspberry Pi 4 to the Presento liveness pipeline running
+on the Windows laptop.
+
+This is the next integration layer after the successful:
+
+    C270 -> Raspberry Pi -> live network stream -> Windows/OpenCV
+
+test.
+
+The objective is:
+
+    C270
+      ->
+    Raspberry Pi 4
+      ->
+    live network stream
+      ->
+    Windows laptop
+      ->
+    OpenCV frame
+      ->
+    Presento liveness.py
+      ->
+    liveness result
+      ->
+    Presento recognition / attendance pipeline
+
+No MP4 files are used.
+No 20-second recording is used.
+No SCP is used.
+No human prompt is required during normal operation.
+
+IMPORTANT ARCHITECTURE RULE
+===========================
+The camera transport that has already been tested successfully must remain the
+camera transport.
+
+Do NOT replace the working live stream with:
+
+    C270 -> MP4 -> laptop -> liveness
+
+The production/test path is:
+
+    C270 -> V4L2 -> OpenCV -> network -> laptop -> liveness
+
+The liveness detector operates on live OpenCV frames.
+
+The system should prioritize current frames over stale frames. Do not create an
+unbounded queue of camera frames.
+
+KNOWN WORKING CAMERA CONFIGURATION
+===================================
+Raspberry Pi:
+- Raspberry Pi 4 Model B Rev 1.5
+- Hostname: presento-pi
+- User: admin
+- IP: 10.241.151.190
+- Debian GNU/Linux 13
+- Python 3.13.5
+- OpenCV 4.10.0
+- architecture: aarch64
+
+Camera:
+- Logitech C270 HD WEBCAM
+- USB vendor: 046d
+- USB product: 0825
+- V4L2 device: /dev/video0
+- driver: uvcvideo
+
+Production camera settings:
+
+    1280x720
+    MJPG
+    30 FPS
+    exposure_dynamic_framerate=0
+
+Laptop:
+- Windows
+- laptop Wi-Fi IP used in the successful live-feed test:
+  10.241.151.81
+- receiver TCP port:
+  5001
+
+SUCCESSFUL LIVE FEED TEST
+=========================
+The following architecture has already been successfully tested:
+
+    C270
+      |
+      | USB
+      v
+    Raspberry Pi
+      |
+      | TCP live JPEG frames
+      v
+    Windows laptop
+      |
+      v
+    OpenCV
+      |
+      v
+    Live display window
+
+The working test used:
+- Pi sender: ~/live_camera.py
+- Windows receiver: %USERPROFILE%\live_receiver.py
+- TCP port 5001
+- JPEG frames
+- 1280x720 camera configuration
+
+The user confirmed the live video worked well.
+
+This playbook extends that exact working feed into liveness processing.
+
+EXACT PI CAMERA INITIALIZATION
+==============================
+Run on Raspberry Pi:
+
+    v4l2-ctl -d /dev/video0 --set-ctrl=exposure_dynamic_framerate=0
+
+    v4l2-ctl -d /dev/video0 --set-fmt-video=width=1280,height=720,pixelformat=MJPG --set-parm=30
+
+Verify:
+
+    v4l2-ctl -d /dev/video0 --get-fmt-video
+
+Expected:
+
+    Width/Height : 1280/720
+    Pixel Format : 'MJPG' (Motion-JPEG)
+
+Verify FPS:
+
+    v4l2-ctl -d /dev/video0 --get-parm
+
+Expected:
+
+    Frame rate set to 30.000 fps
+
+WHY MJPG
+========
+The C270 supports YUYV and MJPEG.
+
+1280x720 YUYV was previously observed at approximately 10 FPS when 30 FPS
+was requested.
+
+MJPG achieved approximately 29.78 FPS in the tested OpenCV configuration after:
+
+    exposure_dynamic_framerate=0
+
+Therefore MJPG remains the preferred transport format.
+
+LIVE STREAM PROTOCOL
+====================
+The current test protocol is:
+
+    4-byte unsigned big-endian JPEG length
+    JPEG payload
+    4-byte unsigned big-endian JPEG length
+    JPEG payload
+    ...
+
+Example:
+
+    [00 00 12 34][JPEG bytes]
+    [00 00 11 98][JPEG bytes]
+    ...
+
+This makes every JPEG frame independently decodable.
+
+The Pi does not save frames to disk.
+
+The laptop decodes the received JPEG immediately with:
+
+    cv2.imdecode()
+
+NO FRAME BACKLOG
+================
+The liveness pipeline must not process an old queue of frames.
+
+Bad architecture:
+
+    camera
+       |
+       v
+    frame queue
+       |
+       +-> frame 1
+       +-> frame 2
+       +-> frame 3
+       +-> frame 4
+       +-> ...
+       |
+       v
+    liveness
+
+If liveness takes longer than the camera FPS, this creates increasing latency.
+
+Preferred architecture:
+
+    camera
+       |
+       v
+    latest live frame
+       |
+       v
+    liveness
+       |
+       v
+    result
+
+When a newer frame arrives, an older unprocessed frame can be replaced.
+
+This keeps liveness close to real time.
+
+LIVENESS PIPELINE
+=================
+The live Presento liveness path should be:
+
+    live frame
+       |
+       v
+    frame validation
+       |
+       v
+    face detection
+       |
+       v
+    face crop
+       |
+       v
+    quality check
+       |
+       v
+    liveness.py
+       |
+       v
+    liveness result
+       |
+       +---- FAIL -> reject recognition
+       |
+       +---- PASS -> allow recognition
+                         |
+                         v
+                    attendance logic
+
+IMPORTANT:
+The exact liveness algorithm and function signatures must come from the
+existing Presento liveness.py implementation.
+
+Do not invent a replacement liveness algorithm if the project already contains
+one.
+
+EXISTING PRESENTO VISION COMPONENTS
+===================================
+Known/referenced modules:
+
+    runner.py
+    enroll.py
+    liveness.py
+    quality.py
+    vision.py
+    storage.py
+    config.py
+    api.py
+
+The liveness integration point is:
+
+    live OpenCV frame
+        ->
+    existing Presento vision pipeline
+        ->
+    existing liveness.py
+
+INSPECT LIVENESS.PY FIRST
+=========================
+Before changing code, the AI/IDE must inspect:
+
+    liveness.py
+
+Determine:
+- class names
+- function names
+- constructor arguments
+- model loading
+- input image format
+- expected image size
+- face crop requirements
+- output type
+- confidence/score fields
+- threshold configuration
+- CPU/GPU requirements
+- initialization cost
+- whether state is maintained between frames
+
+Do not change these interfaces unless necessary.
+
+RECOMMENDED ABSTRACT LIVENESS INTERFACE
+========================================
+If the existing project does not already expose a clean interface, normalize
+it behind:
+
+    liveness_result = liveness_detector.check(face)
+
+Conceptual input:
+
+    face
+        OpenCV BGR face crop
+
+Conceptual output:
+
+    {
+        "is_live": True,
+        "score": 0.93
+    }
+
+This is an integration contract example only.
+
+The actual fields must match the existing Presento liveness implementation.
+
+LIVE LIVENESS RECEIVER
+======================
+The current Windows receiver displays:
+
+    cv2.imshow("Presento - Live C270 Camera", frame)
+
+For liveness testing, the display can remain, but every valid frame should also
+be passed to the liveness pipeline.
+
+Conceptual replacement:
+
+    result = presento_liveness.process(frame)
+
+The AI/IDE must adapt this call to the actual liveness.py API.
+
+MINIMAL TEST RECEIVER
+=====================
+The following is a transport-level reference receiver.
+
+Save as:
+
+    %USERPROFILE%\presento_liveness_receiver.py
+
+Code:
+
+    import cv2
+    import socket
+    import struct
+    import numpy as np
+    import time
+
+    PI_IP = "10.241.151.190"
+    PORT = 5001
+
+    def recv_exact(sock, size):
+        data = bytearray()
+
+        while len(data) < size:
+            chunk = sock.recv(size - len(data))
+
+            if not chunk:
+                return None
+
+            data.extend(chunk)
+
+        return bytes(data)
+
+    def main():
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
+        print(f"Connecting to Raspberry Pi {PI_IP}:{PORT}...")
+        sock.connect((PI_IP, PORT))
+        print("Connected to Raspberry Pi.")
+
+        frame_count = 0
+        start = time.time()
+
+        while True:
+            header = recv_exact(sock, 4)
+
+            if header is None:
+                print("Pi disconnected.")
+                break
+
+            size = struct.unpack("!I", header)[0]
+
+            if size <= 0 or size > 5_000_000:
+                print("Invalid frame size:", size)
+                break
+
+            jpeg = recv_exact(sock, size)
+
+            if jpeg is None:
+                print("Frame reception stopped.")
+                break
+
+            frame = cv2.imdecode(
+                np.frombuffer(jpeg, dtype=np.uint8),
+                cv2.IMREAD_COLOR
+            )
+
+            if frame is None:
+                continue
+
+            frame_count += 1
+
+            elapsed = time.time() - start
+
+            if elapsed >= 1.0:
+                fps = frame_count / elapsed
+
+                cv2.putText(
+                    frame,
+                    f"Live FPS: {fps:.1f}",
+                    (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0, 255, 0),
+                    2
+                )
+
+            cv2.imshow("Presento - Live Liveness Feed", frame)
+
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+
+        sock.close()
+        cv2.destroyAllWindows()
+
+    if __name__ == "__main__":
+        main()
+
+This receiver is a transport/display test.
+
+It is NOT a replacement for the existing Presento liveness algorithm.
+
+LIVENESS TEST WITH EXISTING PRESENTO CODE
+==========================================
+The integration should follow this sequence:
+
+    frame
+      |
+      v
+    detect face
+      |
+      v
+    crop face
+      |
+      v
+    call existing liveness detector
+      |
+      v
+    show live status
+
+For testing, the window can display:
+
+    LIVE
+    SPOOF
+    UNKNOWN
+
+or the exact result names used by the existing Presento implementation.
+
+Do not change the actual liveness threshold merely to make a test pass.
+
+LIVENESS SHOULD NOT RUN ON THE ENTIRE FRAME
+===========================================
+If liveness.py expects a face crop, do:
+
+    full frame
+       ->
+    face detector
+       ->
+    face bounding box
+       ->
+    face crop
+       ->
+    liveness
+
+Do not blindly send the complete 1280x720 frame into a model expecting a face
+crop.
+
+The AI/IDE must inspect the existing implementation first.
+
+MULTI-FACE HANDLING
+===================
+If multiple faces are detected:
+
+    frame
+      |
+      +--> face 1 -> liveness -> recognition
+      |
+      +--> face 2 -> liveness -> recognition
+      |
+      +--> face 3 -> liveness -> recognition
+
+Each face must have its own liveness result.
+
+Do not assume the first detected face is always the intended person.
+
+If Presento already defines a multi-face policy, preserve it.
+
+LIVENESS + RECOGNITION RULE
+===========================
+A face should not become a valid attendance event merely because recognition
+matches a face.
+
+Required conceptual gate:
+
+    recognized
+        AND
+    liveness_passed
+        AND
+    quality_passed
+        |
+        v
+    attendance
+
+A spoof/liveness failure should block attendance.
+
+The exact thresholds must come from the existing Presento configuration.
+
+LIVE DISPLAY
+============
+For the first liveness test, display:
+
+    Presento - Live Liveness Feed
+
+Recommended overlay:
+
+    Camera: CONNECTED
+    Stream: 1280x720 MJPG
+    FPS: approximately 30
+    Face: DETECTED / NOT DETECTED
+    Liveness: LIVE / SPOOF / UNKNOWN
+
+The overlay is for debugging/visual verification.
+
+The liveness result itself must come from the actual liveness module.
+
+NO MP4
+======
+Do not create:
+
+    /tmp/liveness.mp4
+
+Do not record 20 seconds.
+
+Do not transfer recordings.
+
+Do not use:
+
+    scp
+
+The liveness test must operate on live frames.
+
+NO HUMAN FEEDBACK
+==================
+Normal operation must not ask:
+
+    "Is this person live?"
+
+    "Should I accept?"
+
+    "Should I reject?"
+
+    "Should I retry?"
+
+    "Should I process this frame?"
+
+These decisions belong to the liveness algorithm and Presento policy.
+
+The human can observe the debugging window, but the software must make the
+liveness decision automatically.
+
+WARM-UP
+=======
+The C270 can produce several invalid/dark frames immediately after opening.
+
+Observed historical behavior:
+- some tests became clear around the third frame
+- another 1280x720 MJPG test had frames 1-22 at mean brightness 2.00
+- frame 23 became valid
+
+Therefore:
+
+    DO NOT:
+        sleep(1)
+        capture exactly one frame
+        assume it is valid
+
+Instead:
+
+    open camera
+       |
+       v
+    read frames continuously
+       |
+       v
+    validate
+       |
+       v
+    first valid frame
+       |
+       v
+    liveness pipeline
+
+No frame queue is required.
+
+FRAME VALIDATION
+================
+Basic transport validation:
+
+    frame is not None
+    frame.size > 0
+    width >= 320
+    height >= 240
+
+Known startup-invalid condition:
+
+    mean approximately 2
+    min approximately 2
+    max approximately 2
+
+A basic rejection rule can be:
+
+    mean <= 2.5
+    AND
+    min >= 1
+    AND
+    max <= 3
+
+This is specifically based on the tested C270 startup behavior.
+
+Do not use this brightness rule as the liveness detector.
+
+A dark real face and a bright spoof are different concepts.
+
+QUALITY VS LIVENESS
+===================
+Keep these separate:
+
+QUALITY:
+- Is the face usable?
+- Is it sufficiently sharp?
+- Is exposure acceptable?
+- Is the face large enough?
+- Is the crop suitable?
+
+LIVENESS:
+- Does the existing liveness model/pipeline classify the presented face as
+  live rather than a spoof?
+
+RECOGNITION:
+- Whose face is it?
+
+Attendance should require the appropriate combination.
+
+NETWORK RECOVERY
+================
+If the Pi disappears:
+
+    receiver detects socket close
+       ->
+    reconnect
+       ->
+    resume live frames
+
+The application must not require a human to restart it.
+
+The current minimal receiver can be upgraded to automatic reconnect.
+
+RECOMMENDED PRODUCTION RECEIVER DESIGN
+======================================
+Use three logical components:
+
+    CameraTransport
+        |
+        v
+    LatestFrameStore
+        |
+        v
+    LivenessProcessor
+
+CameraTransport:
+- receives network JPEGs
+- decodes them
+- replaces latest frame
+- never builds an unbounded queue
+
+LatestFrameStore:
+- contains at most one current frame
+- thread-safe
+
+LivenessProcessor:
+- retrieves newest available frame
+- runs detection
+- runs quality
+- runs liveness
+- forwards only valid liveness results
+
+This separation prevents the network code from being coupled to the AI model.
+
+THREADING MODEL
+===============
+Recommended:
+
+    Network receiver thread
+             |
+             v
+       latest_frame
+             |
+             v
+       AI/liveness thread
+
+The network receiver should not wait for the liveness model to finish.
+
+If the model is busy:
+- incoming frames replace the latest frame
+- stale frames are not processed later
+
+This maintains low latency.
+
+IMPORTANT:
+If the existing Presento code is not thread-safe, do not run the same liveness
+model instance concurrently from multiple threads. Use one liveness worker or
+a documented thread-safe model architecture.
+
+LIVENESS MODEL INITIALIZATION
+=============================
+Model loading should happen once at application startup.
+
+Bad:
+
+    every frame:
+        load model
+        run liveness
+
+Good:
+
+    application start:
+        load liveness model
+
+    every frame:
+        run existing liveness function
+
+This prevents severe latency.
+
+FACE DETECTOR INITIALIZATION
+============================
+Similarly, initialize the face detector once.
+
+Do not load detector/model weights on every frame.
+
+Recommended lifecycle:
+
+    startup
+      ->
+    load face detector
+      ->
+    load quality model/config
+      ->
+    load liveness model
+      ->
+    connect camera
+      ->
+    process live frames
+
+LIVENESS PERFORMANCE
+====================
+Measure separately:
+
+    received_fps
+    decoded_fps
+    face_detection_fps
+    liveness_fps
+    recognition_fps
+
+Do not report the camera's configured 30 FPS as the liveness processing FPS.
+
+Example:
+
+    camera:      29.8 FPS
+    receiver:    29.5 FPS
+    liveness:    12 FPS
+
+This is possible and does not mean the camera is running at 12 FPS.
+
+In that case, latest-frame processing prevents liveness latency from growing.
+
+ATTENDANCE DE-DUPLICATION
+=========================
+A person may remain in front of the camera for hundreds of frames.
+
+Do not create hundreds of attendance records.
+
+Conceptual policy:
+
+    liveness PASS
+       +
+    recognition MATCH
+       +
+    attendance not already recorded
+       ->
+    create attendance event
+
+Use the existing Presento database/API rules.
+
+Do not invent a new MySQL schema if the project already has one.
+
+FASTAPI INTEGRATION
+===================
+Once liveness and recognition are valid:
+
+    liveness
+       ->
+    recognition
+       ->
+    attendance service
+       ->
+    FastAPI
+       ->
+    MySQL
+       ->
+    React dashboard
+
+The liveness module itself should ideally not directly perform database writes.
+
+Recommended separation:
+
+    vision layer
+        returns result
+
+    attendance layer
+        decides whether to record
+
+    API layer
+        persists / exposes event
+
+    database layer
+        stores data
+
+This makes testing easier.
+
+EXAMPLE RESULT CONTRACT
+=======================
+Conceptual only:
+
+    {
+        "camera_id": "c270",
+        "timestamp": 1234567890.123,
+        "face_detected": true,
+        "quality_passed": true,
+        "liveness_passed": true,
+        "liveness_score": 0.93,
+        "identity": {
+            "student_id": "STUDENT_ID",
+            "name": "Student Name",
+            "confidence": 0.91
+        }
+    }
+
+Use the existing Presento result model if one exists.
+
+Do not replace project-specific fields.
+
+AUTOMATIC STARTUP
+=================
+Pi camera sender:
+
+    sudo systemctl enable presento-camera.service
+    sudo systemctl start presento-camera.service
+
+Status:
+
+    sudo systemctl status presento-camera.service
+
+Logs:
+
+    sudo journalctl -u presento-camera.service -f
+
+The laptop should start the Presento receiver/AI automatically with the
+application.
+
+No interactive prompt should be required.
+
+WINDOWS FIREWALL
+================
+If not already configured:
+
+Run PowerShell as Administrator:
+
+    New-NetFirewallRule -DisplayName "Presento Camera Stream" -Direction Inbound -Protocol TCP -LocalPort 5001 -Action Allow
+
+Check:
+
+    Get-NetFirewallRule -DisplayName "Presento Camera Stream"
+
+NETWORK CONFIGURATION
+=====================
+Laptop Wi-Fi:
+    10.241.151.81
+
+Raspberry Pi:
+    10.241.151.190
+
+Port:
+    5001
+
+Pi -> laptop:
+
+    10.241.151.190
+          |
+          | TCP 5001
+          v
+    10.241.151.81
+
+If the laptop IP changes, the Pi sender configuration must be updated or the
+network should use a stable DHCP reservation.
+
+CURRENT TEST COMMANDS
+=====================
+SSH to Pi:
+
+    ssh admin@10.241.151.190
+
+Configure camera:
+
+    v4l2-ctl -d /dev/video0 --set-ctrl=exposure_dynamic_framerate=0
+
+    v4l2-ctl -d /dev/video0 --set-fmt-video=width=1280,height=720,pixelformat=MJPG --set-parm=30
+
+Verify:
+
+    v4l2-ctl -d /dev/video0 --get-fmt-video
+
+    v4l2-ctl -d /dev/video0 --get-parm
+
+Run existing successful live sender:
+
+    python3 ~/live_camera.py
+
+On Windows run:
+
+    py $HOME\live_receiver.py
+
+This is the baseline live stream test.
+
+PYTHON DEPENDENCIES ON WINDOWS
+==============================
+Required by the transport receiver:
+
+    opencv-python
+    numpy
+
+Install:
+
+    py -m pip install opencv-python numpy
+
+Check:
+
+    py -c "import cv2,numpy; print('OpenCV:',cv2.__version__); print('NumPy:',numpy.__version__)"
+
+The existing Presento liveness module may have additional dependencies. Those
+must be obtained from the Presento project's actual requirements/configuration.
+
+LIVENESS DEBUG MODE
+===================
+During development, keep a debug window that shows:
+
+    live camera
+    face box
+    liveness result
+    liveness score if available
+    processing FPS
+    network FPS
+
+Do not make the debug UI part of the recognition decision.
+
+A headless production mode should later be possible:
+
+    no display
+    no keyboard input
+    no human prompt
+    automatic processing
+
+Q should be available only as a development/test exit mechanism.
+
+PRODUCTION MODE
+===============
+Production should not require:
+
+    cv2.waitKey()
+
+or:
+
+    cv2.imshow()
+
+The AI should continue even if no display is available.
+
+Development:
+
+    camera -> receiver -> display + liveness
+
+Production:
+
+    camera -> receiver -> liveness -> recognition -> attendance
+
+TEST PLAN
+=========
+TEST 1 - CAMERA
+---------------
+Verify:
+
+    v4l2-ctl -d /dev/video0 --get-fmt-video
+
+Expected:
+    1280x720
+    MJPG
+
+TEST 2 - CAMERA FPS
+-------------------
+Verify:
+
+    v4l2-ctl -d /dev/video0 --get-parm
+
+Expected:
+    30 FPS configured
+
+TEST 3 - LIVE NETWORK
+---------------------
+Start Pi sender:
+
+    python3 ~/live_camera.py
+
+Start Windows receiver:
+
+    py $HOME\live_receiver.py
+
+Expected:
+    continuous live video window
+
+TEST 4 - FACE DETECTION
+-----------------------
+Pass received frames to existing Presento face detector.
+
+Expected:
+    face bounding box when a face is visible
+
+TEST 5 - LIVENESS
+-----------------
+Pass detected face crop to existing liveness.py.
+
+Expected:
+    automatic liveness classification
+
+TEST 6 - SPOOF REJECTION
+------------------------
+Use the project's intended liveness test procedure.
+
+Expected:
+    liveness failure prevents the face from reaching valid attendance.
+
+Do not alter thresholds simply to force a desired result.
+
+TEST 7 - LIVE PERSON
+--------------------
+Present a real person to the camera.
+
+Expected:
+
+    face detected
+       ->
+    quality accepted
+       ->
+    liveness accepted
+       ->
+    recognition attempted
+
+TEST 8 - ATTENDANCE
+-------------------
+If recognition matches and the attendance rules permit it:
+
+    liveness PASS
+       ->
+    recognition MATCH
+       ->
+    attendance event
+
+Expected:
+    one appropriate attendance record, not one record per frame.
+
+TEST 9 - NETWORK RECOVERY
+-------------------------
+Stop the laptop receiver.
+
+Expected:
+    Pi remains running and retries connection.
+
+Restart receiver.
+
+Expected:
+    Pi reconnects automatically.
+
+TEST 10 - CAMERA RECOVERY
+-------------------------
+Temporarily interrupt the camera.
+
+Expected:
+    camera sender detects read failure
+    releases camera
+    reopens camera
+    resumes streaming
+
+No human prompt.
+
+AI/IDE IMPLEMENTATION CHECKLIST
+================================
+When an AI coding agent integrates this into Presento:
+
+1. Inspect the existing repository.
+2. Locate liveness.py.
+3. Identify the exact liveness API.
+4. Identify face detector API.
+5. Identify quality API.
+6. Identify recognition API.
+7. Identify existing result models.
+8. Identify FastAPI attendance endpoint/service.
+9. Identify MySQL schema.
+10. Preserve existing interfaces.
+11. Keep the working Pi live-camera transport.
+12. Replace only the display step with the Presento pipeline.
+13. Do not introduce an unbounded frame queue.
+14. Initialize models once.
+15. Process the newest frame.
+16. Automatically reconnect.
+17. Automatically recover the camera.
+18. Log health metrics.
+19. Add liveness status to the debug display.
+20. Keep database writes outside the camera transport layer.
+21. Add attendance deduplication using the existing project rules.
+22. Provide headless production mode.
+23. Do not require human prompts.
+
+EXACT REFERENCE LIVE CAMERA SENDER
+==================================
+The sender that was used successfully for the first live test was conceptually:
+
+    C270
+      ->
+    OpenCV
+      ->
+    JPEG encode
+      ->
+    TCP
+      ->
+    laptop
+
+The Pi sender uses:
+
+    LAPTOP_IP = "10.241.151.81"
+    PORT = 5001
+    WIDTH = 1280
+    HEIGHT = 720
+    FPS = 30
+    JPEG_QUALITY = 85
+
+It configures:
+
+    cv2.CAP_V4L2
+    MJPG
+    1280x720
+    30 FPS
+
+and sends:
+
+    struct.pack("!I", len(jpeg))
+    jpeg bytes
+
+This transport has already been visually validated.
+
+DO NOT CHANGE THE TRANSPORT UNNECESSARILY
+=========================================
+Because the live video transport is already working, the first liveness
+integration should modify only the laptop-side processing.
+
+Keep:
+
+    Pi sender
+        ->
+    Windows receiver
+        ->
+    decoded frame
+
+Then add:
+
+    decoded frame
+        ->
+    Presento face detector
+        ->
+    Presento quality
+        ->
+    Presento liveness.py
+
+This isolates the liveness integration from camera/network debugging.
+
+EXPECTED FINAL ARCHITECTURE
+============================
+Development:
+
+    Logitech C270
+         |
+         v
+    Raspberry Pi 4
+         |
+         | live JPEG frames
+         v
+    Windows receiver
+         |
+         v
+    OpenCV BGR frame
+         |
+         +------> debug display
+         |
+         v
+    Face detector
+         |
+         v
+    Quality
+         |
+         v
+    Liveness
+         |
+         v
+    Recognition
+         |
+         v
+    Attendance
+         |
+         v
+    FastAPI
+         |
+         v
+    MySQL
+         |
+         v
+    React dashboard
+
+Production:
+
+    Logitech C270
+         |
+         v
+    Raspberry Pi 4
+         |
+         | live network stream
+         v
+    Presento laptop service
+         |
+         v
+    latest valid frame
+         |
+         v
+    face detection
+         |
+         v
+    quality
+         |
+         v
+    liveness.py
+         |
+         v
+    recognition
+         |
+         v
+    attendance
+         |
+         v
+    FastAPI / MySQL
+         |
+         v
+    React dashboard
+
+FINAL DESIGN RULE
+=================
+The camera feed is LIVE.
+
+The liveness detector is LIVE.
+
+The laptop processes current camera frames.
+
+There is no MP4 recording stage.
+
+There is no 20-second processing loop.
+
+There is no manual frame selection.
+
+There is no human approval step.
+
+There is no unbounded frame queue.
+
+The existing Presento liveness implementation remains the authority for the
+actual liveness decision.
+
+The successful camera transport remains unchanged unless testing proves a
+specific transport problem.
+
+END OF LIVENESS INTEGRATION PLAYBOOK

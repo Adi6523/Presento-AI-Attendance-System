@@ -1,0 +1,1938 @@
+PRESENTO ATTENDANCE SYSTEM
+COMPLETE RASPBERRY PI 4 + LOGITECH C270 + LAPTOP AI
+INTEGRATION PLAYBOOK
+
+Document purpose
+================
+This document is the machine-readable integration specification for connecting:
+
+    Logitech C270 USB Webcam
+            |
+            v
+    Raspberry Pi 4 Model B
+            |
+            | live network stream
+            v
+    Presento AI on Windows laptop
+            |
+            v
+    Face detection / quality / liveness / recognition
+            |
+            v
+    Presento FastAPI backend
+            |
+            v
+    MySQL attendance database
+            |
+            v
+    React + TypeScript + Vite dashboard
+
+PRIMARY REQUIREMENT
+===================
+The Raspberry Pi is the camera edge device.
+
+The laptop is the AI/processing device.
+
+The Pi must continuously capture the C270 and send the live camera frames directly
+to the laptop. The integration must not intentionally build a frame queue, file
+buffer, recording buffer, or batch-processing buffer.
+
+The laptop-side receiver must always process the newest frame available. If the
+AI processing temporarily becomes slower than the camera, stale frames must not
+accumulate. A bounded latest-frame mechanism is preferable to an unbounded queue.
+
+IMPORTANT ENGINEERING LIMITATION
+=================================
+"Live with no buffers" means NO INTENTIONAL APPLICATION-LEVEL FRAME BUFFERING.
+Operating-system socket buffers and the camera/USB driver's internal buffers cannot
+be eliminated completely.
+
+If the requirement is literally "every physical camera frame must be delivered
+and processed without dropping any frame", then the AI processing rate must always
+be at least the camera frame rate and the network must have sufficient capacity.
+A real-time AI system should normally prioritize LOW LATENCY over processing stale
+frames.
+
+The reference implementation below therefore uses:
+- C270 MJPEG capture on Pi
+- one-frame-at-a-time transmission
+- no unbounded frame queue
+- direct TCP connection to laptop
+- length-prefixed JPEG frames
+- immediate decode on laptop
+- newest-frame processing
+- automatic reconnect
+- no human prompts during normal operation
+
+KNOWN HARDWARE / SOFTWARE
+=========================
+Raspberry Pi:
+- Raspberry Pi 4 Model B Rev 1.5
+- Hostname: presento-pi
+- Username: admin
+- Known IP: 10.241.151.190
+- OS: Debian GNU/Linux 13
+- Kernel: 6.18.50+rpt-rpi-v8 #1 SMP PREEMPT Debian 1:6.18.50-1+rpt1 (2026-09-11)
+- Architecture: aarch64
+- Python: 3.13.5
+- Git: 2.47.3
+- OpenCV: 4.10.0
+- v4l-utils installed
+- fswebcam installed
+- Pillow/PIL installed
+
+Camera:
+- Logitech C270 HD WEBCAM
+- USB vendor ID: 046d
+- USB product ID: 0825
+- Driver: uvcvideo
+- Interface: V4L2
+- Device: /dev/video0
+- USB 2.00
+- MaxPower: 500mA
+- USB high-speed / 480M
+
+Laptop:
+- Windows
+- Presento AI runs on laptop
+- Windows PowerShell is used for SSH/SCP and local commands
+- Laptop must be reachable by the Raspberry Pi over the same network or by
+  appropriate routing/firewall rules
+
+PRESENTO SOFTWARE STACK
+=======================
+Backend:
+- Python
+- FastAPI
+- MySQL
+
+Edge/vision components already referenced by Presento:
+- runner.py
+- enroll.py
+- liveness.py
+- quality.py
+- vision.py
+- storage.py
+- config.py
+- api.py
+
+Frontend:
+- React
+- TypeScript
+- Vite
+
+VISION FLOW
+===========
+C270
+ -> V4L2
+ -> OpenCV capture
+ -> frame validation / warm-up
+ -> face detection
+ -> quality check
+ -> liveness
+ -> recognition
+ -> attendance event
+ -> FastAPI
+ -> MySQL
+ -> React dashboard
+
+CAMERA CONFIGURATION
+====================
+Production camera configuration:
+
+Device:
+    /dev/video0
+
+Driver:
+    uvcvideo
+
+Backend:
+    V4L2
+
+Resolution:
+    1280x720
+
+Camera pixel format:
+    MJPG
+
+Target camera FPS:
+    30
+
+Critical control:
+    exposure_dynamic_framerate=0
+
+OpenCV backend:
+    cv2.CAP_V4L2
+
+The C270 can expose both YUYV and MJPEG. MJPEG is preferred for 1280x720
+network streaming because the camera performs JPEG compression before USB/network
+transport.
+
+CRITICAL FIX DISCOVERED DURING TESTING
+======================================
+The C270 exposed this control:
+
+    exposure_dynamic_framerate
+
+Default observed value:
+    1
+
+Setting it to:
+    0
+
+removed the large frame-rate reduction observed during direct V4L2 streaming.
+
+Observed before fix:
+- approximately 14-15 FPS at 640x480 MJPG despite requesting 30 FPS
+- direct v4l2-ctl tests also showed approximately 14-15 FPS
+
+Observed after fix:
+- approximately 28-30 FPS at 640x480 MJPG
+- approximately 28-30 FPS at 1280x720 MJPG
+- OpenCV achieved 596 good frames in approximately 20 seconds
+- measured OpenCV capture rate was approximately 29.78 FPS
+
+INITIAL BLACK FRAME BEHAVIOR
+============================
+The C270 can produce several dark/invalid initial frames after opening.
+
+Observed examples:
+- individual tests sometimes became clear around the third frame
+- one 1280x720 MJPG diagnostic showed frames 1-22 with mean brightness 2.00
+- frame 23 became valid with mean brightness 37.82
+- subsequent frames remained around 37.x
+
+Therefore:
+DO NOT use a hard-coded "sleep 1 second and capture one frame" as the
+production warm-up strategy.
+
+Instead:
+1. Open the camera.
+2. Continuously read frames.
+3. Validate each frame.
+4. Discard only invalid initial frames.
+5. Begin AI processing as soon as a valid frame arrives.
+6. Do not accumulate discarded frames.
+
+This is a warm-up/validation stage, not a frame buffer.
+
+EXACT RASPBERRY PI INITIALIZATION COMMANDS
+==========================================
+Run these on Raspberry Pi Bash.
+
+Check OS:
+    uname -a
+
+Check Python:
+    python3 --version
+
+Check Git:
+    git --version
+
+Check camera:
+    v4l2-ctl --list-devices
+
+List camera capabilities:
+    v4l2-ctl -d /dev/video0 --list-formats-ext
+
+List controls:
+    v4l2-ctl -d /dev/video0 --list-ctrls
+
+Set the critical exposure behavior:
+    v4l2-ctl -d /dev/video0 --set-ctrl=exposure_dynamic_framerate=0
+
+Configure 1280x720 MJPG at 30 FPS:
+    v4l2-ctl -d /dev/video0 --set-fmt-video=width=1280,height=720,pixelformat=MJPG --set-parm=30
+
+Verify format:
+    v4l2-ctl -d /dev/video0 --get-fmt-video
+
+Verify FPS:
+    v4l2-ctl -d /dev/video0 --get-parm
+
+Recommended initialization sequence:
+    v4l2-ctl -d /dev/video0 --set-ctrl=exposure_dynamic_framerate=0
+    v4l2-ctl -d /dev/video0 --set-fmt-video=width=1280,height=720,pixelformat=MJPG --set-parm=30
+    v4l2-ctl -d /dev/video0 --get-fmt-video
+    v4l2-ctl -d /dev/video0 --get-parm
+
+CAMERA CONTROL DETAILS OBSERVED
+================================
+Observed controls included:
+
+    auto_exposure
+        menu
+        min=0
+        max=3
+        default=3
+        value=3
+        Aperture Priority Mode
+
+    exposure_time_absolute
+        min=1
+        max=10000
+        step=1
+        default=156
+        value=156
+        inactive while auto exposure is active
+
+    exposure_dynamic_framerate
+        bool
+        default=0
+        observed value=1 before the fix
+
+Do not use guessed control names such as:
+    exposure_auto
+    exposure_auto_priority
+
+The C270 did not expose those exact names in the tested environment.
+
+EXACT V4L2 STREAM TESTS
+=======================
+640x480 MJPG 30 FPS before the fix:
+
+    v4l2-ctl -d /dev/video0 --set-fmt-video=width=640,height=480,pixelformat=MJPG --set-parm=30
+    time v4l2-ctl -d /dev/video0 --stream-mmap=3 --stream-count=300 --stream-to=/dev/null
+
+Observed direct stream:
+- approximately 14.37 FPS average
+- stream stabilized around approximately 14.95 FPS
+
+After:
+    v4l2-ctl -d /dev/video0 --set-ctrl=exposure_dynamic_framerate=0
+
+Run:
+    time v4l2-ctl -d /dev/video0 --stream-mmap=3 --stream-count=300 --stream-to=/dev/null
+
+Observed:
+- stream climbed from approximately 25 FPS
+- stabilized around approximately 29.8 FPS
+- total time approximately 10.860 seconds in one run
+- average approximately 27.62 FPS
+
+600-frame test:
+    time v4l2-ctl -d /dev/video0 --stream-mmap=3 --stream-count=600 --stream-to=/dev/null
+
+Observed:
+- total time approximately 20.913 seconds
+- average approximately 28.69 FPS
+- stream stabilized around approximately 29.8 FPS
+
+1280x720 MJPG direct stream after the fix also stabilized around the high
+20s / approximately 29.8 FPS.
+
+EXACT RAW MJPEG TEST
+====================
+Capture 30 MJPEG frames:
+
+    v4l2-ctl -d /dev/video0 --stream-mmap=3 --stream-count=30 --stream-to=/tmp/c270_1280.mjpg
+
+Check file:
+    ls -lh /tmp/c270_1280.mjpg
+
+A tested result was approximately:
+    940K
+
+A JPEG extracted from this raw MJPEG stream was clear. This proved that the
+C270 itself can deliver valid 1280x720 MJPEG frames through V4L2.
+
+EXACT OPENCV SINGLE-FRAME TEST USED
+====================================
+This was the earlier YUYV validation test:
+
+    python3 -c "import cv2,time; cap=cv2.VideoCapture('/dev/video0',cv2.CAP_V4L2); cap.set(cv2.CAP_PROP_FOURCC,cv2.VideoWriter_fourcc(*'YUYV')); cap.set(cv2.CAP_PROP_FRAME_WIDTH,320); cap.set(cv2.CAP_PROP_FRAME_HEIGHT,240); cap.set(cv2.CAP_PROP_FPS,5); print('Opened:',cap.isOpened()); [(ret,frame) for _ in range(5) for ret,frame in [cap.read()]]; ret,frame=cap.read(); print('Read:',ret,'Shape:',None if frame is None else frame.shape,'Mean:',None if frame is None else frame.mean(),'Min:',None if frame is None else frame.min(),'Max:',None if frame is None else frame.max()); cv2.imwrite('/tmp/opencv_yuyv.jpg',frame); cap.release()"
+
+The test skipped five frames and saved the next frame. A clear real camera image
+was obtained in testing.
+
+EXACT YUYV RAW CONVERSION COMMANDS
+===================================
+Convert YUYV luminance data:
+
+    python3 -c "from PIL import Image; import numpy as np; d=np.fromfile('/tmp/yuyv.raw',dtype=np.uint8)[:320*240*2].reshape(240,320,2); y=d[:,:,0]; Image.fromarray(y).save('/tmp/yuyv_y.png'); print('saved /tmp/yuyv_y.png')"
+
+Extract the fifth YUYV frame:
+
+    python3 -c "from PIL import Image; import numpy as np; d=np.fromfile('/tmp/test_yuyv.raw',dtype=np.uint8); n=320*240*2; y=d[4*n:5*n:2].reshape(240,320); Image.fromarray(y).save('/tmp/frame5.png'); print('saved /tmp/frame5.png')"
+
+EXACT OPENCV 1280x720 MJPG VIDEO TEST
+=======================================
+After exposure_dynamic_framerate was disabled:
+
+    python3 -c "import cv2,time; cap=cv2.VideoCapture('/dev/video0',cv2.CAP_V4L2); cap.set(cv2.CAP_PROP_FOURCC,cv2.VideoWriter_fourcc(*'MJPG')); cap.set(cv2.CAP_PROP_FRAME_WIDTH,1280); cap.set(cv2.CAP_PROP_FRAME_HEIGHT,720); cap.set(cv2.CAP_PROP_FPS,30); print('Camera:',cap.isOpened(),'Format:',cap.get(cv2.CAP_PROP_FRAME_WIDTH),'x',cap.get(cv2.CAP_PROP_FRAME_HEIGHT),'FPS:',cap.get(cv2.CAP_PROP_FPS)); [cap.read() for _ in range(5)]; out=cv2.VideoWriter('/tmp/c270_1280x720_mpeg_20sec.mp4',cv2.VideoWriter_fourcc(*'mp4v'),30,(1280,720)); start=time.time(); good=0; bad=0; exec('while time.time()-start<20:\n ret,frame=cap.read()\n if ret: out.write(frame); good+=1\n else: bad+=1'); elapsed=time.time()-start; out.release(); cap.release(); print('Good frames:',good); print('Bad frames:',bad); print('Capture time:',round(elapsed,2),'sec'); print('Actual capture FPS:',round(good/elapsed,2)); print('Saved: /tmp/c270_1280x720_mpeg_20sec.mp4')"
+
+Tested result:
+    Camera: True
+    Format: 1280.0 x 720.0
+    FPS: 30.0
+    Good frames: 596
+    Bad frames: 0
+    Capture time: approximately 20.01 sec
+    Actual capture FPS: approximately 29.78
+    Saved: /tmp/c270_1280x720_mpeg_20sec.mp4
+
+This is the definitive tested 1280x720 MJPG 30 FPS OpenCV capture result.
+
+EXACT 300-FRAME BRIGHTNESS DIAGNOSTIC
+======================================
+The following command was used:
+
+    python3 -c "import cv2,numpy as np,time; cap=cv2.VideoCapture('/dev/video0',cv2.CAP_V4L2); cap.set(cv2.CAP_PROP_FOURCC,cv2.VideoWriter_fourcc(*'MJPG')); cap.set(cv2.CAP_PROP_FRAME_WIDTH,1280); cap.set(cv2.CAP_PROP_FRAME_HEIGHT,720); cap.set(cv2.CAP_PROP_FPS,30); print('Camera started:',cap.isOpened()); start=time.time(); values=[]; good=0; bad=0; [((values.append((i,frame.mean(),frame.min(),frame.max())),globals().__setitem__('good',good+1)) if ret else globals().__setitem__('bad',bad+1)) for i in range(1,301) for ret,frame in [cap.read()]]; elapsed=time.time()-start; cap.release(); print('\nFrames:',good,'Bad:',bad); print('Time:',round(elapsed,2),'sec'); print('FPS:',round(good/elapsed,2)); print('\nFrame  Brightness  Min  Max'); [print(f'{i:5d}  {mean:10.2f}  {mn:3.0f}  {mx:3.0f}') for i,mean,mn,mx in values]"
+
+Observed:
+- frames 1-22: mean brightness 2.00
+- frame 23: mean brightness 37.82
+- frames after that: approximately 37.x
+- approximately 29.19 FPS
+- 0 failed reads
+
+The one-liner is retained here for historical reference. Production code below uses
+normal loops.
+
+TESTED 640x480 MJPG VIDEO
+==========================
+Configured:
+    v4l2-ctl -d /dev/video0 --set-fmt-video=width=640,height=480,pixelformat=MJPG --set-parm=30
+
+Observed OpenCV:
+    Good frames: 301
+    Bad frames: 0
+    Capture time: approximately 20.01 sec
+    Real capture FPS: approximately 15.04 FPS
+
+This was before the exposure_dynamic_framerate fix and therefore is NOT the
+production performance target.
+
+TESTED 1280x720 YUYV
+====================
+When 1280x720 YUYV was requested at 30 FPS, OpenCV negotiated approximately
+10 FPS. Approximately 196 good frames were captured over approximately 20 sec.
+
+Therefore:
+- Do not use YUYV for the production 1280x720 stream.
+- Use MJPG.
+
+USB / POWER / TOPOLOGY INVESTIGATION
+=====================================
+USB descriptor:
+    USB 2.00
+    MaxPower 500mA
+    Logitech C270
+
+The camera appeared on a USB 2.0 / high-speed 480M path.
+
+Pi power throttling test:
+    vcgencmd get_throttled
+
+Observed:
+    throttled=0x0
+
+CPU core voltage:
+    vcgencmd measure_volts
+
+Observed:
+    volt=0.8800V
+
+IMPORTANT:
+This is CPU core voltage and must not be interpreted as the USB 5V rail.
+
+USB autosuspend:
+    cat /sys/module/usbcore/parameters/autosuspend
+
+Observed:
+    2
+
+Temporary test:
+    echo -1 | sudo tee /sys/module/usbcore/parameters/autosuspend
+
+Autosuspend was not the main cause because C270 resets continued.
+
+Other troubleshooting:
+- Keyboard was disconnected for a test; C270 still reset.
+- C270 was moved across physical USB ports; resets continued.
+- dmesg showed repeated USB reset/disconnect events.
+- SanDisk Cruzer Switch USB flash drive worked normally on the same Pi USB
+  subsystem.
+- These investigations are historical; after disabling dynamic exposure
+  framerate, the camera achieved approximately 30 FPS in testing.
+
+COMMON USB RESET LOGS OBSERVED
+==============================
+Examples:
+
+    usb 1-1.3: reset high-speed USB device number 5 using xhci_hcd
+    uvcvideo 1-1.3:1.0: reset_resume error -5
+    usb 1-1.3: USB disconnect, device number 5
+
+and:
+
+    usb 1-1.2: reset high-speed USB device number 7 using xhci_hcd
+
+If these reappear in production:
+1. Check power:
+       vcgencmd get_throttled
+2. Check USB topology:
+       lsusb -t
+3. Check camera:
+       v4l2-ctl --list-devices
+4. Check kernel logs:
+       dmesg | tail -n 100
+5. Reapply:
+       v4l2-ctl -d /dev/video0 --set-ctrl=exposure_dynamic_framerate=0
+6. Reconfigure the format.
+
+PRESENTO LIVE STREAM ARCHITECTURE
+=================================
+Do NOT make the Pi write video files and upload them to the laptop.
+
+Production flow:
+
+    /dev/video0
+        |
+        v
+    OpenCV / V4L2
+        |
+        v
+    JPEG frame
+        |
+        v
+    TCP length-prefixed frame
+        |
+        | Wi-Fi / Ethernet
+        v
+    Laptop Presento receiver
+        |
+        v
+    cv2.imdecode()
+        |
+        v
+    Latest valid frame
+        |
+        +--> face detection
+        +--> quality
+        +--> liveness
+        +--> recognition
+        |
+        v
+    attendance event
+        |
+        v
+    FastAPI
+        |
+        v
+    MySQL
+        |
+        v
+    React dashboard
+
+NO-HUMAN-INPUT OPERATION
+========================
+Normal operation must not ask a human to:
+- approve a frame
+- type a prompt
+- restart the camera
+- reconnect the stream
+- choose a resolution
+- choose a codec
+- manually restart the receiver
+
+The software should:
+- start automatically
+- configure the camera automatically
+- validate the camera
+- connect to the laptop automatically
+- reconnect if the network disconnects
+- reopen the camera after capture failure
+- expose health state
+- log errors
+- continue operating without interactive prompts
+
+PI LIVE CAMERA SENDER
+=====================
+Create this file on the Raspberry Pi:
+
+    nano ~/presento_camera_sender.py
+
+Production code:
+
+    import cv2
+    import socket
+    import struct
+    import time
+    import os
+    import sys
+
+    LAPTOP_IP = os.environ.get("PRESENTO_LAPTOP_IP", "10.241.151.100")
+    LAPTOP_PORT = int(os.environ.get("PRESENTO_CAMERA_PORT", "5001"))
+
+    CAMERA = "/dev/video0"
+    WIDTH = 1280
+    HEIGHT = 720
+    FPS = 30
+    JPEG_QUALITY = 85
+
+    RECONNECT_DELAY = 2.0
+    CAMERA_REOPEN_DELAY = 1.0
+
+    def configure_camera():
+        cap = cv2.VideoCapture(CAMERA, cv2.CAP_V4L2)
+
+        if not cap.isOpened():
+            return None
+
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
+        cap.set(cv2.CAP_PROP_FPS, FPS)
+
+        actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        actual_fps = cap.get(cv2.CAP_PROP_FPS)
+
+        print(
+            f"Camera opened: {actual_width}x{actual_height} "
+            f"@ {actual_fps:.2f} FPS",
+            flush=True
+        )
+
+        return cap
+
+    def valid_frame(frame):
+        if frame is None:
+            return False
+
+        if frame.size == 0:
+            return False
+
+        h, w = frame.shape[:2]
+
+        if w < 320 or h < 240:
+            return False
+
+        # Detect the known black/invalid startup condition without
+        # introducing a fixed warm-up delay.
+        mean_value = float(frame.mean())
+        min_value = int(frame.min())
+        max_value = int(frame.max())
+
+        if mean_value <= 2.5 and min_value >= 1 and max_value <= 3:
+            return False
+
+        return True
+
+    def connect_laptop():
+        while True:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                sock.connect((LAPTOP_IP, LAPTOP_PORT))
+                print(
+                    f"Connected to Presento laptop at "
+                    f"{LAPTOP_IP}:{LAPTOP_PORT}",
+                    flush=True
+                )
+                return sock
+            except OSError as exc:
+                print(
+                    f"Connection failed: {exc}; retrying...",
+                    flush=True
+                )
+                time.sleep(RECONNECT_DELAY)
+
+    def send_frame(sock, encoded):
+        payload = encoded.tobytes()
+        header = struct.pack("!I", len(payload))
+        sock.sendall(header)
+        sock.sendall(payload)
+
+    def main():
+        # The v4l2-ctl command is normally applied by the startup service.
+        # This process also configures OpenCV explicitly.
+        while True:
+            cap = configure_camera()
+
+            if cap is None:
+                print("Camera unavailable; retrying...", flush=True)
+                time.sleep(CAMERA_REOPEN_DELAY)
+                continue
+
+            sock = connect_laptop()
+
+            try:
+                while True:
+                    ret, frame = cap.read()
+
+                    if not ret or frame is None:
+                        print("Camera read failed; reopening...", flush=True)
+                        break
+
+                    if not valid_frame(frame):
+                        # Drop only the invalid startup frame.
+                        # Do not enqueue it.
+                        continue
+
+                    ok, encoded = cv2.imencode(
+                        ".jpg",
+                        frame,
+                        [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]
+                    )
+
+                    if not ok:
+                        continue
+
+                    try:
+                        send_frame(sock, encoded)
+                    except OSError as exc:
+                        print(
+                            f"Laptop connection lost: {exc}",
+                            flush=True
+                        )
+                        break
+
+            finally:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+
+                cap.release()
+
+            time.sleep(RECONNECT_DELAY)
+
+    if __name__ == "__main__":
+        try:
+            main()
+        except KeyboardInterrupt:
+            print("Camera sender stopped.", flush=True)
+            sys.exit(0)
+
+IMPORTANT:
+Replace the default LAPTOP_IP:
+    10.241.151.100
+
+with the actual laptop IPv4 address.
+
+Find laptop IP from Windows PowerShell:
+    ipconfig
+
+Use the IPv4 address of the active Wi-Fi/Ethernet adapter.
+
+WHY THE SENDER HAS NO FRAME QUEUE
+=================================
+The sender performs:
+
+    capture
+      ->
+    validate
+      ->
+    JPEG encode
+      ->
+    send
+
+There is no:
+- Python Queue
+- list of pending frames
+- disk cache
+- video file
+- batch
+- multi-frame backlog
+
+The socket may still contain operating-system network data because TCP requires
+kernel socket buffers. That cannot be eliminated by Python.
+
+For true lowest-latency behavior, TCP_NODELAY is enabled.
+
+LAPTOP LIVE RECEIVER
+====================
+The laptop receiver accepts the Pi connection and reconstructs each JPEG frame.
+
+Create:
+
+    presento_camera_receiver.py
+
+Code:
+
+    import cv2
+    import socket
+    import struct
+    import numpy as np
+    import threading
+    import time
+
+    HOST = "0.0.0.0"
+    PORT = 5001
+
+    latest_frame = None
+    frame_lock = threading.Lock()
+    running = True
+
+    def recv_exact(sock, size):
+        data = bytearray()
+
+        while len(data) < size:
+            chunk = sock.recv(size - len(data))
+
+            if not chunk:
+                return None
+
+            data.extend(chunk)
+
+        return bytes(data)
+
+    def client_worker(conn, address):
+        global latest_frame
+
+        print(f"Pi connected: {address}", flush=True)
+
+        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
+        try:
+            while running:
+                header = recv_exact(conn, 4)
+
+                if header is None:
+                    break
+
+                frame_size = struct.unpack("!I", header)[0]
+
+                # Prevent corrupted network data from allocating arbitrary
+                # memory.
+                if frame_size <= 0 or frame_size > 5_000_000:
+                    print(
+                        f"Invalid frame size: {frame_size}",
+                        flush=True
+                    )
+                    break
+
+                jpeg = recv_exact(conn, frame_size)
+
+                if jpeg is None:
+                    break
+
+                array = np.frombuffer(jpeg, dtype=np.uint8)
+                frame = cv2.imdecode(array, cv2.IMREAD_COLOR)
+
+                if frame is None:
+                    continue
+
+                # Only one latest frame is retained.
+                # An older frame is overwritten immediately.
+                with frame_lock:
+                    latest_frame = frame
+
+        except OSError as exc:
+            print(f"Receiver socket error: {exc}", flush=True)
+
+        finally:
+            conn.close()
+            print(f"Pi disconnected: {address}", flush=True)
+
+    def server_loop():
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind((HOST, PORT))
+        server.listen(1)
+
+        print(f"Presento camera receiver listening on {HOST}:{PORT}")
+
+        while running:
+            conn, address = server.accept()
+
+            worker = threading.Thread(
+                target=client_worker,
+                args=(conn, address),
+                daemon=True
+            )
+
+            worker.start()
+
+    def get_latest_frame():
+        with frame_lock:
+            if latest_frame is None:
+                return None
+            return latest_frame.copy()
+
+    def main():
+        server_thread = threading.Thread(
+            target=server_loop,
+            daemon=True
+        )
+        server_thread.start()
+
+        print("Presento camera receiver started.")
+
+        while True:
+            frame = get_latest_frame()
+
+            if frame is None:
+                time.sleep(0.005)
+                continue
+
+            # This is the integration point for Presento AI.
+            # Replace this section with:
+            #
+            # result = presento_vision.process(frame)
+            #
+            # Do not add an unbounded frame queue here.
+            #
+            # Example:
+            #
+            # result = process_presento_frame(frame)
+            # handle_attendance_result(result)
+
+            cv2.imshow("Presento Live Camera", frame)
+
+            key = cv2.waitKey(1) & 0xFF
+
+            if key == 27:
+                break
+
+        cv2.destroyAllWindows()
+
+    if __name__ == "__main__":
+        main()
+
+LATEST-FRAME SEMANTICS
+======================
+The receiver deliberately stores only:
+
+    latest_frame
+
+It does not store:
+    frame1
+    frame2
+    frame3
+    frame4
+    ...
+
+This prevents latency from increasing when the AI takes longer than the camera.
+
+If Presento AI processing is fast enough to process every frame, frames will be
+processed continuously. If AI processing is slower, stale frames are replaced.
+
+For attendance recognition, this is normally more useful than building a queue
+that causes the AI to recognize a face from several seconds ago.
+
+FIREWALL / WINDOWS
+==================
+The laptop must allow inbound TCP port 5001.
+
+Run PowerShell as Administrator:
+
+    New-NetFirewallRule -DisplayName "Presento Camera Stream" -Direction Inbound -Protocol TCP -LocalPort 5001 -Action Allow
+
+Check:
+
+    Get-NetFirewallRule -DisplayName "Presento Camera Stream"
+
+If the rule already exists, do not create duplicates.
+
+FIND LAPTOP IP
+==============
+Windows PowerShell:
+
+    ipconfig
+
+Look for:
+
+    IPv4 Address
+
+Example:
+
+    10.241.151.100
+
+The Pi sender must use this address.
+
+PING TEST FROM PI
+=================
+Raspberry Pi:
+
+    ping -c 4 10.241.151.100
+
+Replace the address with the actual laptop IP.
+
+If ping is disabled by Windows firewall, TCP connectivity can still work. The
+authoritative test is the camera receiver connection.
+
+PYTHON DEPENDENCIES ON PI
+=========================
+Required:
+
+    python3
+    opencv-python / system OpenCV
+    numpy
+
+Verify:
+
+    python3 -c "import cv2,numpy; print('OpenCV:',cv2.__version__); print('NumPy:',numpy.__version__)"
+
+Expected tested OpenCV:
+    4.10.0
+
+v4l-utils:
+    sudo apt update
+    sudo apt install -y v4l-utils
+
+fswebcam was installed during troubleshooting:
+    sudo apt install -y fswebcam
+
+Pillow/PIL:
+    python3 -c "from PIL import Image; print('Pillow OK')"
+
+The sender does not require Pillow. OpenCV is sufficient.
+
+PYTHON DEPENDENCIES ON LAPTOP
+=============================
+The receiver requires:
+
+    Python 3
+    opencv-python
+    numpy
+
+Install in a Presento Python environment:
+
+    python -m pip install opencv-python numpy
+
+If the project already has a virtual environment, use that environment rather
+than installing globally.
+
+INTEGRATING WITH PRESENTO AI
+============================
+The receiver should not itself implement the entire recognition system.
+
+The receiver's responsibility is:
+
+    network JPEG
+        ->
+    decoded OpenCV frame
+        ->
+    Presento vision pipeline
+
+Existing Presento modules referenced by the project:
+
+    runner.py
+    enroll.py
+    liveness.py
+    quality.py
+    vision.py
+    storage.py
+    config.py
+    api.py
+
+Suggested interface:
+
+    frame
+      |
+      v
+    vision.process_frame(frame)
+      |
+      +--> detection
+      +--> quality
+      +--> liveness
+      +--> recognition
+      |
+      v
+    RecognitionResult
+      |
+      v
+    attendance service
+      |
+      v
+    FastAPI
+      |
+      v
+    MySQL
+
+RECOMMENDED PRESENTO VISION INTERFACE
+======================================
+The AI/IDE implementing Presento should expose one deterministic function:
+
+    result = process_presento_frame(frame)
+
+Conceptual contract:
+
+Input:
+    OpenCV BGR image
+    shape approximately (720, 1280, 3)
+
+Output:
+    structured recognition result
+
+Example conceptual result:
+
+    {
+        "faces": [
+            {
+                "student_id": "...",
+                "name": "...",
+                "confidence": 0.91,
+                "quality": 0.88,
+                "liveness": true
+            }
+        ],
+        "timestamp": "...",
+        "camera": "c270"
+    }
+
+The actual project schema must remain the source of truth for fields already
+defined by Presento.
+
+ATTENDANCE DE-DUPLICATION
+=========================
+Live video can produce many recognition results for the same student.
+
+Do not insert one attendance row for every video frame.
+
+Attendance service should use an idempotency/deduplication rule, for example:
+
+    student_id + attendance_session + date
+
+or the existing Presento attendance key.
+
+The exact database schema should be taken from the Presento project rather than
+inventing a replacement schema.
+
+A recognition event should flow:
+
+    face recognized
+       ->
+    validate confidence
+       ->
+    validate liveness
+       ->
+    validate quality
+       ->
+    attendance deduplication
+       ->
+    FastAPI attendance endpoint
+       ->
+    MySQL
+       ->
+    dashboard update
+
+NO FILE-BASED CAMERA PIPELINE
+=============================
+Do not use:
+
+    camera -> MP4 -> upload -> AI
+
+Do not use:
+
+    camera -> JPEG files -> folder watcher -> AI
+
+Do not use:
+
+    camera -> recorded video -> laptop
+
+The MP4 commands in this document are TESTING commands only.
+
+The production path is:
+
+    C270 -> V4L2 -> OpenCV -> network -> laptop -> AI
+
+TESTING MP4 COMMANDS RETAINED FOR REFERENCE
+============================================
+The following files were successfully tested:
+
+    /tmp/c270_1280x720_mpeg_20sec.mp4
+    /tmp/c270_1280x720_mjpg_30fps.mp4
+    /tmp/c270_1280x720_30fps.mp4
+    /tmp/c270_1280x720_15fps.mp4
+    /tmp/c270_640x480_mjpg_30fps.mp4
+
+Windows SCP command:
+
+    scp admin@10.241.151.190:/tmp/c270_1280x720_mpeg_20sec.mp4 .
+
+Windows PowerShell open command:
+
+    start .\c270_1280x720_mpeg_20sec.mp4
+
+Other tested transfers:
+
+    scp admin@10.241.151.190:/tmp/c270_1280x720_15fps.mp4 .
+    scp admin@10.241.151.190:/tmp/c270_1280x720_30fps.mp4 .
+    scp admin@10.241.151.190:/tmp/c270_1280x720_mjpg_30fps.mp4 .
+
+These are NOT part of live production operation.
+
+AUTOMATIC PI STARTUP
+====================
+The camera sender should be a systemd service.
+
+Create:
+
+    sudo nano /etc/systemd/system/presento-camera.service
+
+Use:
+
+    [Unit]
+    Description=Presento Raspberry Pi C270 Camera Sender
+    After=network-online.target
+    Wants=network-online.target
+
+    [Service]
+    Type=simple
+    User=admin
+    WorkingDirectory=/home/admin
+    Environment=PRESENTO_LAPTOP_IP=10.241.151.100
+    Environment=PRESENTO_CAMERA_PORT=5001
+    ExecStartPre=/usr/bin/v4l2-ctl -d /dev/video0 --set-ctrl=exposure_dynamic_framerate=0
+    ExecStartPre=/usr/bin/v4l2-ctl -d /dev/video0 --set-fmt-video=width=1280,height=720,pixelformat=MJPG --set-parm=30
+    ExecStart=/usr/bin/python3 /home/admin/presento_camera_sender.py
+    Restart=always
+    RestartSec=2
+
+    [Install]
+    WantedBy=multi-user.target
+
+IMPORTANT:
+If the actual Python executable or script path differs, use the actual path.
+
+Reload:
+
+    sudo systemctl daemon-reload
+
+Enable at boot:
+
+    sudo systemctl enable presento-camera.service
+
+Start:
+
+    sudo systemctl start presento-camera.service
+
+Status:
+
+    sudo systemctl status presento-camera.service
+
+Live logs:
+
+    sudo journalctl -u presento-camera.service -f
+
+Restart:
+
+    sudo systemctl restart presento-camera.service
+
+Stop:
+
+    sudo systemctl stop presento-camera.service
+
+Disable:
+
+    sudo systemctl disable presento-camera.service
+
+AUTOMATIC LAPTOP STARTUP
+========================
+The Presento laptop receiver should start as part of the Presento application
+startup.
+
+Preferred architecture:
+
+    Presento launcher
+       |
+       +--> camera receiver
+       +--> FastAPI
+       +--> AI service
+       +--> frontend
+
+If Windows Task Scheduler is used, configure it to start the Presento receiver
+at user logon or system startup.
+
+The receiver must not require a command prompt interaction.
+
+HEALTH MONITORING
+=================
+The system should expose these states:
+
+    CAMERA_CONNECTED
+    CAMERA_WARMING
+    CAMERA_STREAMING
+    LAPTOP_CONNECTED
+    FRAME_RECEIVED
+    FRAME_VALID
+    AI_PROCESSING
+    ATTENDANCE_RECORDED
+    CAMERA_ERROR
+    NETWORK_ERROR
+
+Recommended metrics:
+
+    camera_fps
+    received_fps
+    processed_fps
+    last_frame_timestamp
+    last_recognition_timestamp
+    network_reconnect_count
+    camera_reopen_count
+    invalid_frame_count
+    recognition_count
+    attendance_count
+
+LOW-LATENCY RULES
+=================
+Rule 1:
+Never create an unbounded frame queue.
+
+Rule 2:
+Never save frames to disk during normal operation.
+
+Rule 3:
+Never wait for a human to approve a frame.
+
+Rule 4:
+Do not intentionally sleep between frames.
+
+Rule 5:
+Use TCP_NODELAY for the low-latency TCP connection.
+
+Rule 6:
+Decode each received JPEG immediately.
+
+Rule 7:
+Keep only the newest decoded frame for the AI worker.
+
+Rule 8:
+If AI processing is slower than capture, overwrite stale frames instead of
+building latency.
+
+Rule 9:
+Do not use MP4 encoding in the production camera path.
+
+Rule 10:
+Automatically reconnect after network failure.
+
+Rule 11:
+Automatically reopen the camera after capture failure.
+
+Rule 12:
+Automatically reapply the known V4L2 camera configuration when the camera
+process starts.
+
+FRAME VALIDATION
+================
+The C270 demonstrated startup frames where:
+
+    mean = 2
+    min = 2
+    max = 2
+
+A basic invalid-frame test can therefore reject this known state.
+
+Production validation should additionally check:
+- frame is not None
+- correct dimensions
+- non-zero image size
+- reasonable luminance
+- optional blur metric
+- optional face presence
+
+Do not reject frames merely because no face is visible. A camera frame can be
+valid even when nobody is in front of the camera.
+
+CAMERA QUALITY PIPELINE
+=======================
+Recommended:
+
+    frame received
+       |
+       v
+    structural validation
+       |
+       v
+    exposure / brightness sanity check
+       |
+       v
+    face detector
+       |
+       v
+    face crop
+       |
+       v
+    quality
+       |
+       v
+    liveness
+       |
+       v
+    recognition
+       |
+       v
+    attendance
+
+Do not use the global frame brightness as the only face-quality decision.
+
+NETWORK FAILURE RECOVERY
+========================
+If the Pi cannot connect:
+
+    retry every 2 seconds
+
+If the connection is lost:
+
+    close socket
+    reconnect
+    continue capture
+
+The sender should not terminate permanently because the laptop was temporarily
+offline.
+
+CAMERA FAILURE RECOVERY
+=======================
+If cap.read() fails:
+
+    release camera
+    wait approximately 1 second
+    reopen camera
+    reapply camera configuration
+    reconnect if necessary
+    continue
+
+Do not ask the user for confirmation.
+
+MULTIPLE CLIENT POLICY
+======================
+The reference receiver is designed for one Presento camera Pi.
+
+If multiple cameras are required later, assign each Pi:
+- unique camera_id
+- unique TCP port or a shared server with camera authentication/identification
+
+Recommended message metadata for future multi-camera operation:
+
+    camera_id
+    frame_sequence
+    capture_timestamp
+    jpeg_size
+
+The current sender can be extended to include a versioned header.
+
+CURRENT TESTED CAMERA PERFORMANCE
+==================================
+1280x720:
+- MJPG
+- requested 30 FPS
+- OpenCV reported 30 FPS configuration
+- after disabling exposure_dynamic_framerate, measured approximately 29.78 FPS
+- 596 good frames
+- 0 bad frames
+- approximately 20.01 seconds
+
+This is the tested basis for the production configuration.
+
+640x480:
+- MJPG
+- requested 30 FPS
+- before the exposure fix, approximately 15 FPS
+- after the fix, approximately 28-30 FPS direct V4L2
+
+1280x720 YUYV:
+- approximately 10 FPS when 30 FPS was requested
+- not recommended for production
+
+DIRECT MJPG:
+- valid clear frames were obtained from V4L2
+- proves camera-side MJPG output works
+
+CAMERA INITIALIZATION SCRIPT
+============================
+For deterministic startup, create:
+
+    ~/presento_camera_init.sh
+
+Code:
+
+    #!/bin/bash
+    set -e
+
+    DEVICE="/dev/video0"
+
+    /usr/bin/v4l2-ctl -d "$DEVICE" --set-ctrl=exposure_dynamic_framerate=0
+
+    /usr/bin/v4l2-ctl -d "$DEVICE" \
+        --set-fmt-video=width=1280,height=720,pixelformat=MJPG \
+        --set-parm=30
+
+    echo "Presento C270 initialized"
+
+    /usr/bin/v4l2-ctl -d "$DEVICE" --get-fmt-video
+    /usr/bin/v4l2-ctl -d "$DEVICE" --get-parm
+
+Make executable:
+
+    chmod +x ~/presento_camera_init.sh
+
+Run:
+
+    ~/presento_camera_init.sh
+
+If using systemd, the ExecStartPre commands are sufficient and the separate
+script is optional.
+
+AI/IDE IMPLEMENTATION INSTRUCTIONS
+===================================
+An AI coding agent reading this document must follow this order.
+
+PHASE 1 - INSPECT
+-----------------
+Inspect the existing Presento repository.
+
+Locate:
+    runner.py
+    enroll.py
+    liveness.py
+    quality.py
+    vision.py
+    storage.py
+    config.py
+    api.py
+    FastAPI application
+    MySQL connection code
+    React frontend
+
+Do not replace existing working modules without inspecting their interfaces.
+
+PHASE 2 - DETERMINE EXISTING INTERFACES
+---------------------------------------
+Identify:
+- vision input format
+- recognition output format
+- liveness API
+- quality API
+- attendance API
+- MySQL schema
+- authentication
+- existing frontend update mechanism
+
+Use those interfaces instead of creating incompatible duplicates.
+
+PHASE 3 - ADD CAMERA TRANSPORT
+-------------------------------
+Add:
+    presento_camera_sender.py
+to the Raspberry Pi side.
+
+Add:
+    presento_camera_receiver.py
+to the laptop side.
+
+Configure:
+    PRESENTO_LAPTOP_IP
+    PRESENTO_CAMERA_PORT
+    CAMERA
+    WIDTH
+    HEIGHT
+    FPS
+
+PHASE 4 - CONNECT RECEIVER TO VISION
+-------------------------------------
+Replace:
+
+    cv2.imshow("Presento Live Camera", frame)
+
+with the actual Presento call.
+
+Preferred:
+
+    result = process_presento_frame(frame)
+
+The implementation must not introduce an unbounded queue.
+
+PHASE 5 - CONNECT RECOGNITION TO ATTENDANCE
+-------------------------------------------
+For a valid recognized person:
+
+    recognition
+       ->
+    confidence validation
+       ->
+    liveness validation
+       ->
+    quality validation
+       ->
+    attendance deduplication
+       ->
+    existing FastAPI attendance endpoint/service
+
+Use the project's existing database schema.
+
+PHASE 6 - AUTOMATE
+------------------
+Configure:
+- Pi systemd sender
+- laptop Presento startup
+- automatic reconnect
+- automatic camera reopen
+- automatic error recovery
+
+No normal-operation human prompt is permitted.
+
+PHASE 7 - VERIFY
+----------------
+Run health tests automatically.
+
+Pi:
+    v4l2-ctl -d /dev/video0 --get-fmt-video
+    v4l2-ctl -d /dev/video0 --get-parm
+    systemctl is-active presento-camera.service
+
+Laptop:
+- receiver listening
+- Pi connected
+- frame counter increasing
+- frame timestamp changing
+- AI processing counter increasing
+
+End-to-end:
+- face detected
+- liveness passes
+- recognition returns identity
+- attendance event reaches FastAPI
+- MySQL row is created once per attendance session
+- React dashboard reflects the event
+
+NO-HUMAN-FEEDBACK REQUIREMENT
+=============================
+The system should never depend on a person responding to:
+- "Is the camera working?"
+- "Should I reconnect?"
+- "Should I use 1280x720?"
+- "Should I skip this frame?"
+- "Should I start Presento?"
+- "Should I retry?"
+
+These decisions must be encoded in configuration and recovery logic.
+
+SECURITY
+========
+The reference TCP stream is intended for a trusted local network.
+
+For deployment beyond a trusted LAN, add:
+- authentication
+- encryption/TLS or VPN
+- camera identity
+- message integrity
+- network access control
+
+Do not expose port 5001 directly to the public internet.
+
+TROUBLESHOOTING COMMANDS
+========================
+Check camera:
+
+    v4l2-ctl --list-devices
+
+Check formats:
+
+    v4l2-ctl -d /dev/video0 --list-formats-ext
+
+Check controls:
+
+    v4l2-ctl -d /dev/video0 --list-ctrls
+
+Check current format:
+
+    v4l2-ctl -d /dev/video0 --get-fmt-video
+
+Check current FPS:
+
+    v4l2-ctl -d /dev/video0 --get-parm
+
+Check USB:
+
+    lsusb
+
+Check USB topology:
+
+    lsusb -t
+
+Check throttling:
+
+    vcgencmd get_throttled
+
+Check voltage:
+
+    vcgencmd measure_volts
+
+Check recent kernel logs:
+
+    dmesg | tail -n 100
+
+Check camera device:
+
+    ls -l /dev/video0
+
+Check OpenCV:
+
+    python3 -c "import cv2; print(cv2.__version__)"
+
+Check Pillow:
+
+    python3 -c "from PIL import Image; print('Pillow OK')"
+
+Check NumPy:
+
+    python3 -c "import numpy; print(numpy.__version__)"
+
+Check sender:
+
+    sudo systemctl status presento-camera.service
+
+Check sender logs:
+
+    sudo journalctl -u presento-camera.service -f
+
+KNOWN WRONG APPROACHES
+======================
+1. Using rpicam/libcamera for the C270 USB webcam
+-------------------------------------------------
+The Pi previously reported:
+
+    rpicam-hello: No cameras available!
+
+That does not mean the USB C270 is broken. The C270 is a UVC USB webcam and
+should be handled through V4L2/uvcvideo.
+
+2. Assuming a one-second sleep fixes startup black frames
+---------------------------------------------------------
+It did not reliably fix the problem.
+
+Use frame validation instead.
+
+3. Assuming OpenCV is the only reason for low FPS
+--------------------------------------------------
+Direct v4l2-ctl streaming also measured approximately 14-15 FPS before the
+exposure_dynamic_framerate fix.
+
+4. Using YUYV at 1280x720
+-------------------------
+The tested camera negotiated approximately 10 FPS at this resolution.
+
+Use MJPG.
+
+5. Writing video to disk for live AI
+------------------------------------
+This adds latency and is not the production architecture.
+
+6. Creating an unbounded queue
+------------------------------
+This causes latency to grow when AI processing falls behind.
+
+Use latest-frame semantics.
+
+7. Guessing V4L2 control names
+--------------------------------
+Use:
+
+    v4l2-ctl -d /dev/video0 --list-ctrls
+
+and use the exact controls exposed by the device.
+
+WINDOWS SCP REFERENCE
+=====================
+Copy a Pi file to the current Windows directory:
+
+    scp admin@10.241.151.190:/tmp/c270_1280x720_mpeg_20sec.mp4 .
+
+Open it:
+
+    start .\c270_1280x720_mpeg_20sec.mp4
+
+Copy a JPEG:
+
+    scp admin@10.241.151.190:/tmp/c270_1280_v4l2.jpg .
+
+For SSH:
+
+    ssh admin@10.241.151.190
+
+PROJECT DIRECTORY RECOMMENDATION
+=================================
+Raspberry Pi:
+
+    /home/admin/presento/
+
+Recommended files:
+
+    /home/admin/presento/presento_camera_sender.py
+    /home/admin/presento/presento_camera_init.sh
+
+Laptop:
+
+    Presento/
+        camera/
+            receiver.py
+            protocol.py
+        vision/
+            ...
+        backend/
+            ...
+        frontend/
+            ...
+
+Keep transport code separate from recognition code.
+
+PROTOCOL RECOMMENDATION
+=======================
+Current simple protocol:
+
+    [4-byte unsigned big-endian JPEG length]
+    [JPEG bytes]
+    [4-byte unsigned big-endian JPEG length]
+    [JPEG bytes]
+    ...
+
+Advantages:
+- simple
+- no text prompts
+- no file system dependency
+- frame boundaries are explicit
+- OpenCV decodes directly
+- easy to implement on Pi and Windows
+- no unbounded application queue
+
+Potential future protocol header:
+
+    magic
+    version
+    camera_id
+    sequence
+    timestamp
+    jpeg_length
+    jpeg_payload
+
+This should be added only if Presento needs multi-camera synchronization,
+diagnostics, or stronger metadata.
+
+PERFORMANCE EXPECTATIONS
+=========================
+Target:
+    1280x720
+    MJPG
+    30 FPS
+
+The C270/Pi test achieved approximately 29.78 FPS through OpenCV after the
+exposure_dynamic_framerate fix.
+
+End-to-end AI FPS may be lower because face detection, liveness, recognition,
+network transfer, JPEG decoding, and database operations consume CPU time.
+
+The camera capture rate and AI processing rate are separate metrics.
+
+Do not change the camera to a lower FPS merely to make the AI appear faster.
+First measure:
+- capture FPS
+- network receive FPS
+- decode FPS
+- AI processing FPS
+- recognition FPS
+
+If recognition is expensive, process the newest available frame rather than
+processing stale frames.
+
+ATTENDANCE EVENT TIMING
+=======================
+A recognition result should include an event timestamp generated close to the
+actual frame processing/capture time.
+
+Do not use the time a queued frame happens to be processed if the frame is old.
+
+If timestamps are added to the transport protocol, use the Pi capture timestamp
+for camera-time measurements and laptop receive time for network diagnostics.
+
+FINAL PRODUCTION START SEQUENCE
+================================
+1. Raspberry Pi boots.
+2. Network becomes available.
+3. systemd starts presento-camera.service.
+4. V4L2 config is applied:
+       exposure_dynamic_framerate=0
+       1280x720
+       MJPG
+       30 FPS
+5. OpenCV opens /dev/video0.
+6. Sender reads frames continuously.
+7. Invalid startup frames are discarded without being queued.
+8. First valid frame is JPEG encoded.
+9. Frame is sent immediately to laptop.
+10. Laptop receiver decodes it immediately.
+11. Only the newest decoded frame is retained.
+12. Presento AI processes the newest frame.
+13. Face detection runs.
+14. Quality runs.
+15. Liveness runs.
+16. Recognition runs.
+17. Attendance service deduplicates the event.
+18. FastAPI records/updates attendance.
+19. MySQL stores the attendance record.
+20. React dashboard displays the result.
+21. Sender and receiver continue indefinitely.
+22. Network/camera failures trigger automatic recovery.
+
+FINAL REFERENCE CONFIGURATION
+=============================
+Pi:
+    Raspberry Pi 4 Model B Rev 1.5
+    Debian 13
+    Python 3.13.5
+    /dev/video0
+    Logitech C270
+    uvcvideo
+    V4L2
+    1280x720
+    MJPG
+    30 FPS
+    exposure_dynamic_framerate=0
+
+Laptop:
+    Windows
+    Presento AI
+    OpenCV
+    NumPy
+    TCP receiver on port 5001
+
+Presento:
+    camera receiver
+    vision pipeline
+    liveness
+    quality
+    recognition
+    FastAPI
+    MySQL
+    React + TypeScript + Vite
+
+CORE DESIGN RULE
+================
+The Raspberry Pi is a camera acquisition/transport node.
+
+The laptop is the AI processing node.
+
+The Pi does not wait for human feedback.
+
+The laptop does not wait for human feedback.
+
+The system does not use a human-controlled prompt to decide what frame to
+process.
+
+The production path is always:
+
+    C270
+      ->
+    V4L2
+      ->
+    OpenCV
+      ->
+    direct live network transport
+      ->
+    laptop
+      ->
+    Presento AI
+      ->
+    attendance
+      ->
+    FastAPI
+      ->
+    MySQL
+      ->
+    React dashboard
+
+END OF PLAYBOOK
